@@ -46,7 +46,7 @@ def find_matching_groups(bank_df, certify_df):
     bank_df['LAST_NAME'] = bank_df['ACC.ACCOUNT NAME'].apply(get_last_name)
     certify_df['LAST_NAME'] = certify_df['Employee'].apply(get_last_name)
     
-    bank_df['AMOUNT'] = bank_df['FIN.TRANSACTION AMOUNT'].round(3)  # More precise rounding
+    bank_df['AMOUNT'] = bank_df['FIN.TRANSACTION AMOUNT'].round(3)
     certify_df['AMOUNT'] = certify_df['USD Amt'].round(3)
     
     for last_name in bank_df['LAST_NAME'].unique():
@@ -67,22 +67,20 @@ def find_matching_groups(bank_df, certify_df):
             if abs(amount) >= 0.001:
                 certify_amounts[amount] = certify_amounts.get(amount, 0) + 1
         
-        bank_trans = [{'amount': row['AMOUNT'], 'index': idx} 
-                     for idx, row in bank_group.iterrows() 
-                     if idx not in processed_bank_indices]
-        certify_trans = [{'amount': row['AMOUNT'], 'index': idx} 
-                        for idx, row in certify_group.iterrows() 
-                        if idx not in processed_certify_indices]
-        
+        # First pass: Exact matches
         for amount in bank_amounts:
             if amount in certify_amounts:
                 matches_possible = min(bank_amounts[amount], certify_amounts[amount])
                 
                 if matches_possible > 0:
-                    bank_indices = [t['index'] for t in bank_trans 
-                                  if abs(t['amount'] - amount) < 0.001][:matches_possible]
-                    certify_indices = [t['index'] for t in certify_trans 
-                                     if abs(t['amount'] - amount) < 0.001][:matches_possible]
+                    # Get indices for this amount, excluding already processed ones
+                    bank_indices = [idx for idx, row in bank_group.iterrows() 
+                                  if abs(row['AMOUNT'] - amount) < 0.001 and 
+                                  idx not in processed_bank_indices][:matches_possible]
+                    
+                    certify_indices = [idx for idx, row in certify_group.iterrows() 
+                                     if abs(row['AMOUNT'] - amount) < 0.001 and 
+                                     idx not in processed_certify_indices][:matches_possible]
                     
                     if bank_indices and certify_indices:
                         matched_groups.append({
@@ -94,8 +92,13 @@ def find_matching_groups(bank_df, certify_df):
                         processed_bank_indices.update(bank_indices)
                         processed_certify_indices.update(certify_indices)
         
-        bank_trans = [t for t in bank_trans if t['index'] not in processed_bank_indices]
-        certify_trans = [t for t in certify_trans if t['index'] not in processed_certify_indices]
+        # Second pass: Sum combinations
+        bank_trans = [{'amount': row['AMOUNT'], 'index': idx} 
+                     for idx, row in bank_group.iterrows() 
+                     if idx not in processed_bank_indices]
+        certify_trans = [{'amount': row['AMOUNT'], 'index': idx} 
+                        for idx, row in certify_group.iterrows() 
+                        if idx not in processed_certify_indices]
         
         if bank_trans and certify_trans:
             bank_sums = set([t['amount'] for t in bank_trans if abs(t['amount']) >= 0.001])
@@ -108,7 +111,8 @@ def find_matching_groups(bank_df, certify_df):
                 bank_combos = find_sum_combinations(bank_trans, certify_amount)
                 for bank_combo in bank_combos:
                     certify_matches = [t['index'] for t in certify_trans 
-                                     if abs(t['amount'] - certify_amount) < 0.001]
+                                     if abs(t['amount'] - certify_amount) < 0.001 and
+                                     t['index'] not in processed_certify_indices]
                     
                     if certify_matches and not any(idx in processed_bank_indices for idx in bank_combo):
                         matched_groups.append({
@@ -128,7 +132,8 @@ def find_matching_groups(bank_df, certify_df):
                 certify_combos = find_sum_combinations(certify_trans, bank_amount)
                 for certify_combo in certify_combos:
                     bank_matches = [t['index'] for t in bank_trans 
-                                  if abs(t['amount'] - bank_amount) < 0.001]
+                                  if abs(t['amount'] - bank_amount) < 0.001 and
+                                  t['index'] not in processed_bank_indices]
                     
                     if bank_matches and not any(idx in processed_certify_indices for idx in certify_combo):
                         matched_groups.append({
