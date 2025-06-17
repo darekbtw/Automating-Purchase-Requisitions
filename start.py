@@ -38,114 +38,101 @@ def find_sum_combinations(transactions, target_sum, max_combo_size=5):
     return results
 
 def find_matching_groups(bank_df, certify_df):
-    """Find matching groups of transactions with stricter matching tolerance"""
+    """Strict 1-to-1 matching, then sum/combination matching up to 3 items."""
     matched_groups = []
     processed_bank_indices = set()
     processed_certify_indices = set()
-    
+
     bank_df['LAST_NAME'] = bank_df['ACC.ACCOUNT NAME'].apply(get_last_name)
     certify_df['LAST_NAME'] = certify_df['Employee'].apply(get_last_name)
-    
-    bank_df['AMOUNT'] = bank_df['FIN.TRANSACTION AMOUNT'].round(3)
-    certify_df['AMOUNT'] = certify_df['USD Amt'].round(3)
-    
+
+    bank_df['AMOUNT'] = bank_df['FIN.TRANSACTION AMOUNT'].round(2)
+    certify_df['AMOUNT'] = certify_df['USD Amt'].round(2)
+
+    max_combo_size = 3
+    tolerance = 0.01
+
     for last_name in bank_df['LAST_NAME'].unique():
-        bank_group = bank_df[bank_df['LAST_NAME'] == last_name].copy()
-        certify_group = certify_df[certify_df['LAST_NAME'] == last_name].copy()
-        
+        bank_group = bank_df[(bank_df['LAST_NAME'] == last_name) & (~bank_df.index.isin(processed_bank_indices))].copy()
+        certify_group = certify_df[(certify_df['LAST_NAME'] == last_name) & (~certify_df.index.isin(processed_certify_indices))].copy()
+
         if bank_group.empty or certify_group.empty:
             continue
-            
-        bank_amounts = {}
-        certify_amounts = {}
-        
-        for amount in bank_group['AMOUNT']:
-            if abs(amount) >= 0.001:
-                bank_amounts[amount] = bank_amounts.get(amount, 0) + 1
-                
-        for amount in certify_group['AMOUNT']:
-            if abs(amount) >= 0.001:
-                certify_amounts[amount] = certify_amounts.get(amount, 0) + 1
-        
-        # First pass: Exact matches
-        for amount in bank_amounts:
-            if amount in certify_amounts:
-                matches_possible = min(bank_amounts[amount], certify_amounts[amount])
-                
-                if matches_possible > 0:
-                    # Get indices for this amount, excluding already processed ones
-                    bank_indices = [idx for idx, row in bank_group.iterrows() 
-                                  if abs(row['AMOUNT'] - amount) < 0.001 and 
-                                  idx not in processed_bank_indices][:matches_possible]
-                    
-                    certify_indices = [idx for idx, row in certify_group.iterrows() 
-                                     if abs(row['AMOUNT'] - amount) < 0.001 and 
-                                     idx not in processed_certify_indices][:matches_possible]
-                    
-                    if bank_indices and certify_indices:
+
+        # --- Strict 1-to-1 matching ---
+        for bank_idx, bank_row in bank_group.iterrows():
+            if bank_idx in processed_bank_indices:
+                continue
+            bank_amt = bank_row['AMOUNT']
+            match = certify_group[(abs(certify_group['AMOUNT'] - bank_amt) < tolerance) & (~certify_group.index.isin(processed_certify_indices))]
+            if not match.empty:
+                certify_idx = match.index[0]
+                matched_groups.append({
+                    'bank_indices': [bank_idx],
+                    'certify_indices': [certify_idx],
+                    'amount': bank_amt,
+                    'last_name': last_name
+                })
+                processed_bank_indices.add(bank_idx)
+                processed_certify_indices.add(certify_idx)
+                print(f"DEBUG STRICT MATCH: Bank idx {bank_idx} | {bank_row['FIN.TRANSACTION DESCRIPTION']} | Amount: {bank_amt} <---> Certify idx {certify_idx} | {certify_group.loc[certify_idx]['Vendor']} | Amount: {certify_group.loc[certify_idx]['AMOUNT']}")
+
+        # --- Combination matching: Bank to Certify ---
+        # Refresh unmatched
+        bank_group = bank_df[(bank_df['LAST_NAME'] == last_name) & (~bank_df.index.isin(processed_bank_indices))].copy()
+        certify_group = certify_df[(certify_df['LAST_NAME'] == last_name) & (~certify_df.index.isin(processed_certify_indices))].copy()
+        for bank_idx, bank_row in bank_group.iterrows():
+            if bank_idx in processed_bank_indices:
+                continue
+            bank_amt = bank_row['AMOUNT']
+            certify_indices = list(certify_group.index)
+            found = False
+            for size in range(2, min(max_combo_size, len(certify_indices)) + 1):
+                for combo in combinations(certify_indices, size):
+                    combo_sum = certify_group.loc[list(combo), 'AMOUNT'].sum()
+                    if abs(combo_sum - bank_amt) < tolerance:
                         matched_groups.append({
-                            'bank_indices': bank_indices,
-                            'certify_indices': certify_indices,
-                            'amount': amount,
+                            'bank_indices': [bank_idx],
+                            'certify_indices': list(combo),
+                            'amount': bank_amt,
                             'last_name': last_name
                         })
-                        processed_bank_indices.update(bank_indices)
-                        processed_certify_indices.update(certify_indices)
-        
-        # Second pass: Sum combinations
-        bank_trans = [{'amount': row['AMOUNT'], 'index': idx} 
-                     for idx, row in bank_group.iterrows() 
-                     if idx not in processed_bank_indices]
-        certify_trans = [{'amount': row['AMOUNT'], 'index': idx} 
-                        for idx, row in certify_group.iterrows() 
-                        if idx not in processed_certify_indices]
-        
-        if bank_trans and certify_trans:
-            bank_sums = set([t['amount'] for t in bank_trans if abs(t['amount']) >= 0.001])
-            certify_sums = set([t['amount'] for t in certify_trans if abs(t['amount']) >= 0.001])
-            
-            for certify_amount in certify_sums:
-                if certify_amount not in certify_amounts or certify_amounts[certify_amount] == 0:
-                    continue
-                    
-                bank_combos = find_sum_combinations(bank_trans, certify_amount)
-                for bank_combo in bank_combos:
-                    certify_matches = [t['index'] for t in certify_trans 
-                                     if abs(t['amount'] - certify_amount) < 0.001 and
-                                     t['index'] not in processed_certify_indices]
-                    
-                    if certify_matches and not any(idx in processed_bank_indices for idx in bank_combo):
+                        processed_bank_indices.add(bank_idx)
+                        processed_certify_indices.update(combo)
+                        print(f"DEBUG COMBO MATCH: Bank idx {bank_idx} | {bank_row['FIN.TRANSACTION DESCRIPTION']} | Amount: {bank_amt} <---> Certify idxs {combo} | Amounts: {list(certify_group.loc[list(combo), 'AMOUNT'])}")
+                        found = True
+                        break
+                if found:
+                    break
+
+        # --- Combination matching: Certify to Bank ---
+        # Refresh unmatched
+        bank_group = bank_df[(bank_df['LAST_NAME'] == last_name) & (~bank_df.index.isin(processed_bank_indices))].copy()
+        certify_group = certify_df[(certify_df['LAST_NAME'] == last_name) & (~certify_df.index.isin(processed_certify_indices))].copy()
+        for certify_idx, certify_row in certify_group.iterrows():
+            if certify_idx in processed_certify_indices:
+                continue
+            certify_amt = certify_row['AMOUNT']
+            bank_indices = list(bank_group.index)
+            found = False
+            for size in range(2, min(max_combo_size, len(bank_indices)) + 1):
+                for combo in combinations(bank_indices, size):
+                    combo_sum = bank_group.loc[list(combo), 'AMOUNT'].sum()
+                    if abs(combo_sum - certify_amt) < tolerance:
                         matched_groups.append({
-                            'bank_indices': bank_combo,
-                            'certify_indices': certify_matches[:1],
-                            'amount': certify_amount,
+                            'bank_indices': list(combo),
+                            'certify_indices': [certify_idx],
+                            'amount': certify_amt,
                             'last_name': last_name
                         })
-                        processed_bank_indices.update(bank_combo)
-                        processed_certify_indices.update(certify_matches[:1])
-                        certify_amounts[certify_amount] -= 1
-            
-            for bank_amount in bank_sums:
-                if bank_amount not in bank_amounts or bank_amounts[bank_amount] == 0:
-                    continue
-                    
-                certify_combos = find_sum_combinations(certify_trans, bank_amount)
-                for certify_combo in certify_combos:
-                    bank_matches = [t['index'] for t in bank_trans 
-                                  if abs(t['amount'] - bank_amount) < 0.001 and
-                                  t['index'] not in processed_bank_indices]
-                    
-                    if bank_matches and not any(idx in processed_certify_indices for idx in certify_combo):
-                        matched_groups.append({
-                            'bank_indices': bank_matches[:1],
-                            'certify_indices': certify_combo,
-                            'amount': bank_amount,
-                            'last_name': last_name
-                        })
-                        processed_bank_indices.update(bank_matches[:1])
-                        processed_certify_indices.update(certify_combo)
-                        bank_amounts[bank_amount] -= 1
-    
+                        processed_bank_indices.update(combo)
+                        processed_certify_indices.add(certify_idx)
+                        print(f"DEBUG COMBO MATCH: Certify idx {certify_idx} | {certify_row['Vendor']} | Amount: {certify_amt} <---> Bank idxs {combo} | Amounts: {list(bank_group.loc[list(combo), 'AMOUNT'])}")
+                        found = True
+                        break
+                if found:
+                    break
+
     return matched_groups
 
 def remove_zero_sum_groups(df, name_col, amount_col, desc_col=None, date_col=None, max_group_size=4):
@@ -154,9 +141,7 @@ def remove_zero_sum_groups(df, name_col, amount_col, desc_col=None, date_col=Non
     removed_indices = set()
     
     def find_zero_sum_groups(transactions):
-        n = len(transactions)
         zero_sum_groups = set()
-        
         # First look for direct positive/negative pairs
         amounts_dict = {}
         for idx, row in transactions.iterrows():
@@ -166,7 +151,6 @@ def remove_zero_sum_groups(df, name_col, amount_col, desc_col=None, date_col=Non
                     amounts_dict[amount].append(idx)
                 else:
                     amounts_dict[amount] = [idx]
-        
         # Match exact opposite amounts
         for amount in list(amounts_dict.keys()):
             if -amount in amounts_dict:
@@ -175,47 +159,39 @@ def remove_zero_sum_groups(df, name_col, amount_col, desc_col=None, date_col=Non
                 min_pairs = min(len(pos_indices), len(neg_indices))
                 zero_sum_groups.update(pos_indices[:min_pairs])
                 zero_sum_groups.update(neg_indices[:min_pairs])
-        
         # Then try combinations for any remaining amounts
-        remaining_indices = [i for i in range(n) if i not in zero_sum_groups]
+        remaining_indices = [idx for idx in transactions.index if idx not in zero_sum_groups]
         if remaining_indices:
             for size in range(2, min(max_group_size + 1, len(remaining_indices) + 1)):
                 for combo in combinations(remaining_indices, size):
-                    combo_sum = sum(transactions.iloc[i][amount_col] for i in combo)
+                    combo_sum = sum(transactions.loc[i, amount_col] for i in combo)
                     if abs(round(combo_sum, 2)) <= 0.01:  # Round sum before checking
                         zero_sum_groups.update(combo)
-        
         return zero_sum_groups
-    
     # Process each person's transactions
     for name in df[name_col].unique():
         person_mask = df[name_col] == name
         person_transactions = df[person_mask]
-        
         # If date column provided, group by date first
         if date_col:
             for date in person_transactions[date_col].unique():
                 date_mask = person_transactions[date_col] == date
                 date_transactions = person_transactions[date_mask]
-                
                 # Find zero-sum groups within this date
                 zero_sum_indices = find_zero_sum_groups(date_transactions)
-                removed_indices.update(date_transactions.index[list(zero_sum_indices)])
+                removed_indices.update(zero_sum_indices)
         else:
             # Find zero-sum groups for all person's transactions
             zero_sum_indices = find_zero_sum_groups(person_transactions)
-            removed_indices.update(person_transactions.index[list(zero_sum_indices)])
-    
+            removed_indices.update(zero_sum_indices)
     # Remove the identified zero-sum groups
     if removed_indices:
         # Print details of removed transactions
         removed_df = result_df.loc[list(removed_indices)]
         print("\nRemoving zero-sum transactions:")
         for _, row in removed_df.iterrows():
-            print(f"{row[name_col]}: {row[amount_col]}")
-            
+            print(f"{row[name_col]}: {row[amount_col]} - {row[desc_col] if desc_col else ''}")
         result_df = result_df.drop(index=removed_indices)
-        
     return result_df
 
 def reconcile_statements(bank_file_path, certify_file_path):
@@ -288,7 +264,8 @@ def reconcile_statements(bank_file_path, certify_file_path):
         
         # Create matches only for the minimum number of transactions
         for bank_row, certify_row in zip(bank_entries.iterrows(), certify_entries.iterrows()):
-            # Note: bank_row and certify_row are now tuples where [1] contains the row data
+            # Debug print for each match
+            print(f"DEBUG MATCH: Bank idx {bank_row[0]} | {bank_row[1]['FIN.TRANSACTION DESCRIPTION']} | Amount: {bank_row[1]['FIN.TRANSACTION AMOUNT']} <---> Certify idx {certify_row[0]} | {certify_row[1]['Vendor']} | Amount: {certify_row[1]['USD Amt']}")
             matches.append({
                 'Last Name': group['last_name'],
                 'Amount': certify_row[1]['AMOUNT'],  # Use individual transaction amount
