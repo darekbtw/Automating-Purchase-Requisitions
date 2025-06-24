@@ -260,21 +260,20 @@ def reconcile_statements(bank_file_path, certify_file_path):
         certify_entries = certify_df.loc[group['certify_indices']]
         
         # Calculate group total for reference
-        group_total = abs(bank_entries['FIN.TRANSACTION AMOUNT'].sum().round(2))
+        group_total = bank_entries['FIN.TRANSACTION AMOUNT'].sum().round(2)
         
-        # Create matches only for the minimum number of transactions
-        for bank_row, certify_row in zip(bank_entries.iterrows(), certify_entries.iterrows()):
-            # Debug print for each match
-            print(f"DEBUG MATCH: Bank idx {bank_row[0]} | {bank_row[1]['FIN.TRANSACTION DESCRIPTION']} | Amount: {bank_row[1]['FIN.TRANSACTION AMOUNT']} <---> Certify idx {certify_row[0]} | {certify_row[1]['Vendor']} | Amount: {certify_row[1]['USD Amt']}")
+        # For each certify transaction in the group, output a row with all details and the group total (bank sum)
+        bank_descriptions = "; ".join(bank_entries['FIN.TRANSACTION DESCRIPTION'].astype(str))
+        bank_dates = "; ".join(bank_entries['FIN.POSTING DATE'].astype(str))
+        for _, certify_row in certify_entries.iterrows():
             matches.append({
                 'Last Name': group['last_name'],
-                'Amount': certify_row[1]['AMOUNT'],  # Use individual transaction amount
-                'Bank Date': bank_row[1]['FIN.POSTING DATE'],
-                'Certify Date': certify_row[1]['Processed Date'],
-                'Bank Description': bank_row[1]['FIN.TRANSACTION DESCRIPTION'],
-                'Certify Description': certify_row[1]['Vendor'],
-                'Expense Category': certify_row[1]['Expense Category'],
-                'Group Total': group_total  # Store total separately
+                'Amount': certify_row['AMOUNT'],  # Always Certify amount
+                'Bank Date': bank_dates,  # Concatenated bank dates
+                'Bank Description': bank_descriptions,
+                'Certify Description': certify_row['Vendor'],
+                'Expense Category': certify_row['Expense Category'],
+                'Group Total': group_total  # This is the sum of the matched bank transactions
             })
         
         # Track matched indices
