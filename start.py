@@ -5,6 +5,8 @@ from datetime import timedelta
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from datetime import datetime
+from openpyxl import load_workbook
+from openpyxl.styles import PatternFill
 
 def get_last_name(name):
     """Extract last name from various name formats with debug printing"""
@@ -332,7 +334,28 @@ def save_results(matches, unmatched_bank_df, unmatched_certify_df, output_dir="r
     matches_df = pd.DataFrame(matches)
     if not matches_df.empty:
         matches_df = matches_df.sort_values(['Last Name', 'Group Total', 'Amount'])
-    matches_df.to_excel(os.path.join(output_dir, "matched_transactions.xlsx"), index=False)
+        # Add Mismatch column
+        matches_df['Mismatch'] = matches_df.apply(lambda row: '' if abs(row['Amount'] - row['Group Total']) < 0.01 else 'Mismatch', axis=1)
+    match_path = os.path.join(output_dir, "matched_transactions.xlsx")
+    matches_df.to_excel(match_path, index=False)
+    
+    # Post-process with openpyxl for SUM row and coloring mismatches
+    wb = load_workbook(match_path)
+    ws = wb.active
+    nrows = ws.max_row
+    ncols = ws.max_column
+    # Add SUM row for B and G
+    sum_row = nrows + 1
+    ws[f"A{sum_row}"] = "SUM:"
+    ws[f"B{sum_row}"] = f"=SUM(B2:B{nrows})"
+    ws[f"G{sum_row}"] = f"=SUM(G2:G{nrows})"
+    # Color mismatches in H
+    red_fill = PatternFill(start_color="FFFF0000", end_color="FFFF0000", fill_type="solid")
+    for row in range(2, nrows+1):
+        mismatch_cell = ws[f"H{row}"]
+        if mismatch_cell.value == "Mismatch":
+            mismatch_cell.fill = red_fill
+    wb.save(match_path)
     
     # Save unmatched transactions with all original columns
     unmatched_bank_df.to_excel(os.path.join(output_dir, "unmatched_bank.xlsx"), index=False)
